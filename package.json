@@ -1,0 +1,27 @@
+
+{
+  "name": "telegram-trading-bot-local",
+  "version": "1.0.0",
+  "description": "Telegram Trading Bot for Local Deployment",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "pm2": "pm2 start index.js --name telegram-bot",
+    "pm2-stop": "pm2 stop telegram-bot",
+    "pm2-restart": "pm2 restart telegram-bot",
+    "pm2-logs": "pm2 logs telegram-bot"
+  },
+  "keywords": ["telegram", "bot", "trading", "okx"],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "grammy": "^1.29.0",
+    "node-fetch": "^2.7.0",
+    "crypto": "^1.0.1",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}
