@@ -145,21 +145,16 @@ async function startMonitoring(ctx) {
     if (!currentPortfolio.assets) return;
 
     const changes = [];
-
-    // تحقق من تغير الإجمالي بنسبة ≥10%
-    const totalChange = Math.abs(currentPortfolio.totalUsd - previousPortfolio.totalUsd) / previousPortfolio.totalUsd * 100;
-    let notify = totalChange >= 10;
+    const totalChange = Math.abs(((currentPortfolio.totalUsd - previousPortfolio.totalUsd) / previousPortfolio.totalUsd) * 100);
 
     currentPortfolio.assets.forEach(curr => {
       const prev = previousPortfolio.assets?.find(a => a.asset === curr.asset);
       if (!prev) {
         changes.push(`🟢 *شراء جديد:* ${curr.asset} (${curr.percentage}%)`);
-        notify = true;
       } else {
-        const percDiff = Math.abs(parseFloat(curr.percentage) - parseFloat(prev.percentage));
-        if (percDiff >= 5) {
+        const percentageChange = Math.abs(curr.percentage - prev.percentage);
+        if (percentageChange >= 5) {
           changes.push(`📈 *${curr.asset}*: الآن ${curr.percentage}% (قبل ${prev.percentage}%)`);
-          notify = true;
         }
       }
     });
@@ -168,15 +163,15 @@ async function startMonitoring(ctx) {
       const curr = currentPortfolio.assets.find(a => a.asset === prev.asset);
       if (!curr) {
         changes.push(`🔴 *بيع كامل:* ${prev.asset}`);
-        notify = true;
       }
     });
 
-    if (notify && changes.length > 0) {
+    if (changes.length > 0 || totalChange >= 10) {
       let msg = `📊 *تغيرات المحفظة*\n💰 *الإجمالي:* $${currentPortfolio.totalUsd.toFixed(2)}\n\n`;
       msg += changes.join("\n");
       ctx.reply(msg, { parse_mode: "Markdown" });
     }
+
     previousPortfolio = currentPortfolio;
   }, 15000);
 }
