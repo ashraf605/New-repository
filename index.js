@@ -13,7 +13,6 @@ const requiredEnv = [
   "OKX_API_SECRET_KEY",
   "OKX_API_PASSPHRASE",
   "AUTHORIZED_USER_ID"
-  // تم إزالة RAILWAY_STATIC_URL من التحقق المبدئي لتجنب الانهيار
 ];
 for (const envVar of requiredEnv) {
   if (!process.env[envVar]) {
@@ -26,12 +25,8 @@ const API_BASE_URL = "https://www.okx.com";
 const AUTHORIZED_USER_ID = parseInt(process.env.AUTHORIZED_USER_ID || "0", 10);
 const PORT = process.env.PORT || 3000;
 
-// --- إعدادات Express ---
 const app = express();
 app.use(express.json());
-
-// --- إعداد Webhook ---
-// هذا هو المسار الذي سيستقبل التحديثات من تلغرام
 app.use(`/${bot.token}`, webhookCallback(bot, "express"));
 
 app.get("/", (req, res) => {
@@ -46,7 +41,7 @@ let monitoredAssetPrices = {};
 let watchlist = new Set();
 let watchlistPrices = {};
 
-// ... (جميع دوال البوت الأخرى تبقى كما هي بدون تغيير) ...
+// --- الدوال الأساسية (بدون تغيير في المنطق) ---
 function getHeaders(method, path, body = "") {
   const timestamp = new Date().toISOString();
   const bodyString = typeof body === 'object' ? JSON.stringify(body) : body;
@@ -108,7 +103,7 @@ async function getPortfolioData() {
         const price = prices[instId] || (asset.ccy === "USDT" ? 1 : 0);
         const usdValue = amount * price;
 
-        if (usdValue >= 1) {
+        if (usdValue >= 0.1) { // تخفيض الحد الأدنى لإظهار العملات الصغيرة
           portfolio.push({
             asset: asset.ccy,
             instId: instId,
@@ -122,7 +117,7 @@ async function getPortfolioData() {
 
     const totalUsd = portfolio.reduce((sum, a) => sum + a.usdValue, 0);
     portfolio.forEach(a => {
-      a.percentage = totalUsd > 0 ? ((a.usdValue / totalUsd) * 100).toFixed(2) : "0.00";
+      a.percentage = totalUsd > 0 ? ((a.usdValue / totalUsd) * 100) : 0;
     });
     portfolio.sort((a, b) => b.usdValue - a.usdValue);
 
@@ -133,38 +128,47 @@ async function getPortfolioData() {
   }
 }
 
+// --- Middleware للتحقق من المستخدم ---
 bot.use(async (ctx, next) => {
   if (ctx.from?.id !== AUTHORIZED_USER_ID) {
-    // لا ترسل رد هنا لتجنب الكشف عن وجود البوت لغير المصرح لهم
     console.log(`Unauthorized access attempt by user ID: ${ctx.from?.id}`);
     return;
   }
   await next();
 });
 
-async function showBalance(ctx) {
-  await ctx.reply("⏳ جارٍ جلب بيانات المحفظة...");
-  const { assets, totalUsd } = await getPortfolioData();
-  if (!assets) return ctx.reply("❌ خطأ في جلب الرصيد. يرجى التحقق من سجلات الخادم.");
+// --- دوال الأوامر مع تصميم محسن ---
 
-  let msg = `📊 *ملخص المحفظة*\n💰 *الإجمالي:* $${totalUsd.toFixed(2)}\n\n`;
+async function showBalance(ctx) {
+  await ctx.reply("⏳ لحظات... جارٍ تحديث بيانات المحفظة.");
+  const { assets, totalUsd } = await getPortfolioData();
+  if (!assets) return ctx.reply("❌ حدث خطأ أثناء جلب الرصيد. يرجى المحاولة مرة أخرى.");
+
+  let msg = `*📊 ملخص المحفظة 📊*\n\n`;
+  msg += `*💰 إجمالي القيمة:* *$${totalUsd.toFixed(2)}*\n`;
+  msg += `------------------------------------\n`;
+
   assets.forEach(a => {
-    msg += `• *${a.asset}*: $${a.usdValue.toFixed(2)} (${a.percentage}%)\n   *الكمية:* ${a.amount.toFixed(6)}\n`;
+    msg += `*💎 ${a.asset}*\n`;
+    msg += `   *القيمة:* $${a.usdValue.toFixed(2)}  *(${a.percentage.toFixed(2)}%)*\n`;
+    msg += `   *الكمية:* ${a.amount.toLocaleString('en-US', { maximumFractionDigits: 6 })}\n\n`;
   });
 
-  const time = new Date().toLocaleString("ar-EG");
-  msg += `\n_آخر تحديث: ${time}_`;
+  const time = new Date().toLocaleTimeString("ar-EG", { hour: '2-digit', minute: '2-digit', hour12: true });
+  msg += `_آخر تحديث: ${time}_`;
 
   ctx.reply(msg, { parse_mode: "Markdown" });
 }
+
+// --- دوال المراقبة مع تصميم محسن للتنبيهات ---
 
 function checkTotalValueChange(currentTotal, previousTotal) {
     if (!previousTotal || previousTotal === 0) return null;
     const changePercent = ((currentTotal - previousTotal) / previousTotal) * 100;
     
     if (Math.abs(changePercent) >= 2) {
-        const direction = changePercent > 0 ? 'ارتفاع' : 'انخفاض';
-        return `🔔 *تنبيه القيمة الإجمالية*: ${direction} بنسبة ${Math.abs(changePercent).toFixed(2)}%\n💰 *الإجمالي الجديد*: $${currentTotal.toFixed(2)}`;
+        const direction = changePercent > 0 ? '📈 ارتفاع' : '📉 انخفاض';
+        return `*🔔 تنبيه إجمالي المحفظة 🔔*\n\n${direction} بنسبة *${Math.abs(changePercent).toFixed(2)}%*\n\n*💰 القيمة الجديدة:* $${currentTotal.toFixed(2)}`;
     }
     return null;
 }
@@ -175,23 +179,23 @@ function checkAssetCompositionChanges(currentAssets, previousAssets) {
 
     for (const currentAsset of currentAssets) {
         const prevAsset = prevAssetsMap.get(currentAsset.asset);
-        if (!prevAsset) {
-            changes.push(`🟢 *شراء جديد*: ${currentAsset.amount.toFixed(4)} ${currentAsset.asset}`);
-        } else {
-            if (currentAsset.amount.toFixed(8) !== prevAsset.amount.toFixed(8)) {
-                const diff = currentAsset.amount - prevAsset.amount;
-                const action = diff > 0 ? 'شراء' : 'بيع';
-                changes.push(`*تغيير في* ${currentAsset.asset}: ${action} ${Math.abs(diff).toFixed(4)}`);
+        if (!prevAsset && currentAsset.usdValue > 1) { // تجاهل الشراء الصغير جدا
+            changes.push(`*🟢 شراء جديد:* ${currentAsset.amount.toFixed(4)} *${currentAsset.asset}*`);
+        } else if (prevAsset) {
+            const amountChange = currentAsset.amount - prevAsset.amount;
+            if (Math.abs(amountChange) * (prices[currentAsset.instId] || 1) > 1) { // تجاهل التغييرات الطفيفة
+                const action = amountChange > 0 ? '🔵 شراء إضافي' : '🟠 بيع جزئي';
+                changes.push(`*${action}:* ${Math.abs(amountChange).toFixed(4)} *${currentAsset.asset}*`);
             }
             prevAssetsMap.delete(currentAsset.asset);
         }
     }
 
     for (const soldAsset of prevAssetsMap.values()) {
-        changes.push(`🔴 *بيع كامل*: ${soldAsset.amount.toFixed(4)} ${soldAsset.asset}`);
+        changes.push(`*🔴 بيع كامل:* ${soldAsset.amount.toFixed(4)} *${soldAsset.asset}*`);
     }
     
-    return changes.length > 0 ? `🔄 *تغيرات في الأصول*:\n- ${changes.join('\n- ')}` : null;
+    return changes.length > 0 ? `*🔄 حركة الصفقات 🔄*\n\n${changes.join('\n')}` : null;
 }
 
 function checkOwnedAssetPriceChanges(currentAssets, prices) {
@@ -203,13 +207,13 @@ function checkOwnedAssetPriceChanges(currentAssets, prices) {
         if (currentPrice && previousPrice) {
             const priceChangePercent = ((currentPrice - previousPrice) / previousPrice) * 100;
             if (Math.abs(priceChangePercent) >= 5) {
-                 const direction = priceChangePercent > 0 ? 'ارتفاع' : 'انخفاض';
-                 changes.push(`📈 *${asset.asset}*: ${direction} بنسبة ${Math.abs(priceChangePercent).toFixed(2)}% إلى $${currentPrice.toFixed(4)}`);
+                 const direction = priceChangePercent > 0 ? '🔼' : '🔽';
+                 changes.push(`*${direction} ${asset.asset}:* تغير السعر بنسبة *${priceChangePercent.toFixed(2)}%* ليصل إلى $${currentPrice.toFixed(4)}`);
                  monitoredAssetPrices[asset.instId] = currentPrice;
             }
         }
     }
-    return changes.length > 0 ? `💹 *تغيرات أسعار أصولك*:\n- ${changes.join('\n- ')}` : null;
+    return changes.length > 0 ? `*💹 تغيرات أسعار أصولك 💹*\n\n${changes.join('\n')}` : null;
 }
 
 function checkWatchlistPriceChanges(prices) {
@@ -221,22 +225,22 @@ function checkWatchlistPriceChanges(prices) {
         if (currentPrice && previousPrice) {
             const priceChangePercent = ((currentPrice - previousPrice) / previousPrice) * 100;
             if (Math.abs(priceChangePercent) >= 5) {
-                const direction = priceChangePercent > 0 ? 'ارتفاع' : 'انخفاض';
+                const direction = priceChangePercent > 0 ? '🔼' : '🔽';
                 const assetName = instId.split('-')[0];
-                changes.push(`👁️ *${assetName}*: ${direction} بنسبة ${Math.abs(priceChangePercent).toFixed(2)}% إلى $${currentPrice.toFixed(4)}`);
+                changes.push(`*👁️ ${assetName}:* تغير السعر بنسبة *${priceChangePercent.toFixed(2)}%* ليصل إلى $${currentPrice.toFixed(4)}`);
                 watchlistPrices[instId] = currentPrice;
             }
         }
     }
-     return changes.length > 0 ? `📋 *تنبيهات قائمة المراقبة*:\n- ${changes.join('\n- ')}` : null;
+     return changes.length > 0 ? `*📋 تنبيهات قائمة المراقبة 📋*\n\n${changes.join('\n')}` : null;
 }
 
-
+// ... بقية دوال المراقبة (start/stop) تبقى كما هي ...
 async function startMonitoring(ctx) {
   if (isMonitoring) return ctx.reply("⚠️ المراقبة تعمل بالفعل.");
 
   isMonitoring = true;
-  await ctx.reply("✅ بدأت المراقبة. سأقوم بإعلامك بالتغييرات الهامة...");
+  await ctx.reply("✅ تم تفعيل المراقبة الشاملة. سأقوم بإعلامك بالتغييرات الهامة.");
 
   const initialState = await getPortfolioData();
   const initialPrices = await getMarketPrices();
@@ -280,7 +284,7 @@ async function startMonitoring(ctx) {
     if (watchlistChangeMsg) allNotifications.push(watchlistChangeMsg);
 
     if (allNotifications.length > 0) {
-        const finalMessage = allNotifications.join("\n\n");
+        const finalMessage = allNotifications.join("\n\n------------------------------------\n\n");
         try {
             await bot.api.sendMessage(AUTHORIZED_USER_ID, finalMessage, { parse_mode: "Markdown" });
         } catch (e) {
@@ -302,16 +306,18 @@ async function stopMonitoring(ctx) {
   if (!isMonitoring) return ctx.reply("ℹ️ المراقبة متوقفة بالفعل.");
   clearInterval(monitoringInterval);
   isMonitoring = false;
-  ctx.reply("🛑 توقفت المراقبة.");
+  ctx.reply("🛑 تم إيقاف المراقبة.");
 }
 
+
+// --- دوال قائمة المراقبة مع تصميم محسن ---
 async function addToWatchlist(ctx) {
     const symbol = ctx.match?.toString().toUpperCase();
-    if (!symbol) return ctx.reply("يرجى إدخال رمز العملة بعد الأمر، مثال: `/add BTC`");
+    if (!symbol) return ctx.reply("*خطأ!* يرجى إدخال رمز العملة.\n*مثال:* `/add BTC`", { parse_mode: "Markdown" });
     
     const instId = `${symbol}-USDT`;
     if (watchlist.has(instId)) {
-        return ctx.reply(`*${symbol}* موجودة بالفعل في القائمة.`, { parse_mode: "Markdown" });
+        return ctx.reply(`*${symbol}* موجودة بالفعل في قائمة المراقبة.`, { parse_mode: "Markdown" });
     }
 
     watchlist.add(instId);
@@ -319,18 +325,20 @@ async function addToWatchlist(ctx) {
         const prices = await getMarketPrices();
         if (prices[instId]) {
             watchlistPrices[instId] = prices[instId];
+        } else {
+            return ctx.reply(`لم أتمكن من العثور على العملة *${symbol}*. تأكد من صحة الرمز.`, { parse_mode: "Markdown" });
         }
     }
-    ctx.reply(`✅ تمت إضافة *${symbol}* إلى قائمة المراقبة.`, { parse_mode: "Markdown" });
+    ctx.reply(`✅ تمت إضافة *${symbol}* بنجاح إلى قائمة المراقبة.`, { parse_mode: "Markdown" });
 }
 
 async function removeFromWatchlist(ctx) {
     const symbol = ctx.match?.toString().toUpperCase();
-    if (!symbol) return ctx.reply("يرجى إدخال رمز العملة بعد الأمر، مثال: `/remove BTC`");
+    if (!symbol) return ctx.reply("*خطأ!* يرجى إدخال رمز العملة.\n*مثال:* `/remove BTC`", { parse_mode: "Markdown" });
     
     const instId = `${symbol}-USDT`;
     if (!watchlist.has(instId)) {
-        return ctx.reply(`*${symbol}* غير موجودة في القائمة.`, { parse_mode: "Markdown" });
+        return ctx.reply(`*${symbol}* غير موجودة في قائمة المراقبة.`, { parse_mode: "Markdown" });
     }
 
     watchlist.delete(instId);
@@ -340,23 +348,26 @@ async function removeFromWatchlist(ctx) {
 
 async function viewWatchlist(ctx) {
     if (watchlist.size === 0) {
-        return ctx.reply("قائمة المراقبة فارغة حالياً.");
+        return ctx.reply("📋 قائمة المراقبة فارغة حالياً.\n\nاستخدم الأمر `/add <الرمز>` لإضافة عملة (مثال: `/add BTC`).");
     }
     
     const list = Array.from(watchlist).map(id => `• ${id.split('-')[0]}`).join('\n');
-    ctx.reply(`📋 *قائمة المراقبة الحالية*:\n${list}`, { parse_mode: "Markdown" });
+    ctx.reply(`*📋 قائمة المراقبة الحالية:*\n${list}`, { parse_mode: "Markdown" });
 }
 
+
+// --- لوحة المفاتيح والأوامر مع تصميم محسن ---
 const menu = new InlineKeyboard()
   .text("💰 عرض الرصيد", "show_balance").row()
   .text("👁️ بدء المراقبة", "start_monitoring")
   .text("🛑 إيقاف المراقبة", "stop_monitoring").row()
   .text("📋 عرض قائمة المراقبة", "view_watchlist");
+  
+const welcomeMessage = `*أهلاً بك في بوت مراقبة OKX* 🤖\n\nاختر أحد الأوامر من القائمة للبدء.`;
 
-bot.command("start", ctx =>
-  ctx.reply("أهلاً بك في بوت مراقبة OKX المحسّن! اختر أحد الأوامر:", { reply_markup: menu })
-);
+bot.command("start", ctx => ctx.reply(welcomeMessage, { reply_markup: menu, parse_mode: "Markdown" }));
 
+// ... بقية الأوامر والـ callback تبقى كما هي ...
 bot.command("balance", showBalance);
 bot.command("monitor", startMonitoring);
 bot.command("stop", stopMonitoring);
@@ -367,7 +378,6 @@ bot.command("remove", removeFromWatchlist);
 bot.command("remove_watchlist", removeFromWatchlist);
 bot.command("watchlist", viewWatchlist);
 bot.command("view_watchlist", viewWatchlist);
-
 
 bot.on("callback_query:data", async ctx => {
   const d = ctx.callbackQuery.data;
@@ -381,22 +391,21 @@ bot.on("callback_query:data", async ctx => {
 bot.catch((err) => {
     console.error("--- UNCAUGHT ERROR ---");
     const ctx = err.ctx;
-    console.error(`Error while handling update ${ctx.update.update_id}:`);
+    console.error(`Error while handling update ${ctx.update?.update_id}:`);
     console.error(err.error);
     console.error("--- END UNCAUGHT ERROR ---");
 });
 
-// --- تشغيل الخادم والـ Webhook (النسخة الآمنة) ---
+// --- تشغيل الخادم والـ Webhook ---
 app.listen(PORT, async () => {
   console.log(`Server listening on port ${PORT}`);
   
   const domain = process.env.RAILWAY_STATIC_URL;
   if (domain) {
-    // فقط قم بتسجيل الـ webhook إذا كان المتغير موجوداً
     const webhookUrl = `https://${domain}/${bot.token}`;
     try {
       await bot.api.setWebhook(webhookUrl, {
-        drop_pending_updates: true // لحذف أي تحديثات قديمة عالقة
+        drop_pending_updates: true
       });
       console.log(`Webhook successfully set to: ${webhookUrl}`);
     } catch (e) {
@@ -404,6 +413,5 @@ app.listen(PORT, async () => {
     }
   } else {
     console.error("!!! RAILWAY_STATIC_URL is not set. Webhook will not be configured.");
-    console.error("!!! البوت لن يعمل بدون webhook. يرجى التأكد من تعريف المتغير وإعادة النشر.");
   }
 });
