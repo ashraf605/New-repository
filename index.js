@@ -103,7 +103,8 @@ async function getPortfolioData() {
         const price = prices[instId] || (asset.ccy === "USDT" ? 1 : 0);
         const usdValue = amount * price;
 
-        if (usdValue >= 0.1) {
+        // *** تم إصلاح الخطأ هنا: إعادة الحد الأدنى إلى 1 دولار ***
+        if (usdValue >= 1) { 
           portfolio.push({
             asset: asset.ccy,
             instId: instId,
@@ -173,7 +174,6 @@ function checkTotalValueChange(currentTotal, previousTotal) {
     return null;
 }
 
-// *** تم إصلاح الخطأ هنا ***
 function checkAssetCompositionChanges(currentAssets, previousAssets, prices) {
     const changes = [];
     const prevAssetsMap = new Map(previousAssets.map(a => [a.asset, a]));
@@ -276,7 +276,6 @@ async function startMonitoring(ctx) {
     const totalValueChangeMsg = checkTotalValueChange(currentPortfolio.totalUsd, previousPortfolioState.totalUsd);
     if (totalValueChangeMsg) allNotifications.push(totalValueChangeMsg);
 
-    // *** تم إصلاح الخطأ هنا ***
     const compositionChangeMsg = checkAssetCompositionChanges(currentPortfolio.assets, previousPortfolioState.assets, currentPrices);
     if (compositionChangeMsg) allNotifications.push(compositionChangeMsg);
 
