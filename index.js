@@ -103,7 +103,7 @@ async function getPortfolioData() {
         const price = prices[instId] || (asset.ccy === "USDT" ? 1 : 0);
         const usdValue = amount * price;
 
-        if (usdValue >= 0.1) { // تخفيض الحد الأدنى لإظهار العملات الصغيرة
+        if (usdValue >= 0.1) {
           portfolio.push({
             asset: asset.ccy,
             instId: instId,
@@ -173,17 +173,19 @@ function checkTotalValueChange(currentTotal, previousTotal) {
     return null;
 }
 
-function checkAssetCompositionChanges(currentAssets, previousAssets) {
+// *** تم إصلاح الخطأ هنا ***
+function checkAssetCompositionChanges(currentAssets, previousAssets, prices) {
     const changes = [];
     const prevAssetsMap = new Map(previousAssets.map(a => [a.asset, a]));
 
     for (const currentAsset of currentAssets) {
         const prevAsset = prevAssetsMap.get(currentAsset.asset);
-        if (!prevAsset && currentAsset.usdValue > 1) { // تجاهل الشراء الصغير جدا
+        if (!prevAsset && currentAsset.usdValue > 1) {
             changes.push(`*🟢 شراء جديد:* ${currentAsset.amount.toFixed(4)} *${currentAsset.asset}*`);
         } else if (prevAsset) {
             const amountChange = currentAsset.amount - prevAsset.amount;
-            if (Math.abs(amountChange) * (prices[currentAsset.instId] || 1) > 1) { // تجاهل التغييرات الطفيفة
+            const price = prices[currentAsset.instId] || 0;
+            if (Math.abs(amountChange) * price > 1) { 
                 const action = amountChange > 0 ? '🔵 شراء إضافي' : '🟠 بيع جزئي';
                 changes.push(`*${action}:* ${Math.abs(amountChange).toFixed(4)} *${currentAsset.asset}*`);
             }
@@ -235,7 +237,7 @@ function checkWatchlistPriceChanges(prices) {
      return changes.length > 0 ? `*📋 تنبيهات قائمة المراقبة 📋*\n\n${changes.join('\n')}` : null;
 }
 
-// ... بقية دوال المراقبة (start/stop) تبقى كما هي ...
+
 async function startMonitoring(ctx) {
   if (isMonitoring) return ctx.reply("⚠️ المراقبة تعمل بالفعل.");
 
@@ -274,7 +276,8 @@ async function startMonitoring(ctx) {
     const totalValueChangeMsg = checkTotalValueChange(currentPortfolio.totalUsd, previousPortfolioState.totalUsd);
     if (totalValueChangeMsg) allNotifications.push(totalValueChangeMsg);
 
-    const compositionChangeMsg = checkAssetCompositionChanges(currentPortfolio.assets, previousPortfolioState.assets);
+    // *** تم إصلاح الخطأ هنا ***
+    const compositionChangeMsg = checkAssetCompositionChanges(currentPortfolio.assets, previousPortfolioState.assets, currentPrices);
     if (compositionChangeMsg) allNotifications.push(compositionChangeMsg);
 
     const ownedPriceChangeMsg = checkOwnedAssetPriceChanges(currentPortfolio.assets, currentPrices);
@@ -309,8 +312,6 @@ async function stopMonitoring(ctx) {
   ctx.reply("🛑 تم إيقاف المراقبة.");
 }
 
-
-// --- دوال قائمة المراقبة مع تصميم محسن ---
 async function addToWatchlist(ctx) {
     const symbol = ctx.match?.toString().toUpperCase();
     if (!symbol) return ctx.reply("*خطأ!* يرجى إدخال رمز العملة.\n*مثال:* `/add BTC`", { parse_mode: "Markdown" });
@@ -320,14 +321,14 @@ async function addToWatchlist(ctx) {
         return ctx.reply(`*${symbol}* موجودة بالفعل في قائمة المراقبة.`, { parse_mode: "Markdown" });
     }
 
-    watchlist.add(instId);
-    if (isMonitoring) {
-        const prices = await getMarketPrices();
-        if (prices[instId]) {
+    const prices = await getMarketPrices();
+    if (prices[instId]) {
+        watchlist.add(instId);
+        if (isMonitoring) {
             watchlistPrices[instId] = prices[instId];
-        } else {
-            return ctx.reply(`لم أتمكن من العثور على العملة *${symbol}*. تأكد من صحة الرمز.`, { parse_mode: "Markdown" });
         }
+    } else {
+        return ctx.reply(`لم أتمكن من العثور على العملة *${symbol}*. تأكد من صحة الرمز.`, { parse_mode: "Markdown" });
     }
     ctx.reply(`✅ تمت إضافة *${symbol}* بنجاح إلى قائمة المراقبة.`, { parse_mode: "Markdown" });
 }
@@ -355,8 +356,6 @@ async function viewWatchlist(ctx) {
     ctx.reply(`*📋 قائمة المراقبة الحالية:*\n${list}`, { parse_mode: "Markdown" });
 }
 
-
-// --- لوحة المفاتيح والأوامر مع تصميم محسن ---
 const menu = new InlineKeyboard()
   .text("💰 عرض الرصيد", "show_balance").row()
   .text("👁️ بدء المراقبة", "start_monitoring")
@@ -367,7 +366,6 @@ const welcomeMessage = `*أهلاً بك في بوت مراقبة OKX* 🤖\n\n�
 
 bot.command("start", ctx => ctx.reply(welcomeMessage, { reply_markup: menu, parse_mode: "Markdown" }));
 
-// ... بقية الأوامر والـ callback تبقى كما هي ...
 bot.command("balance", showBalance);
 bot.command("monitor", startMonitoring);
 bot.command("stop", stopMonitoring);
@@ -396,7 +394,6 @@ bot.catch((err) => {
     console.error("--- END UNCAUGHT ERROR ---");
 });
 
-// --- تشغيل الخادم والـ Webhook ---
 app.listen(PORT, async () => {
   console.log(`Server listening on port ${PORT}`);
   
