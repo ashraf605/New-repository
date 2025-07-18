@@ -103,20 +103,22 @@ async function getPortfolioData() {
         const price = prices[instId] || (asset.ccy === "USDT" ? 1 : 0);
         const usdValue = amount * price;
 
-        // *** تم إصلاح الخطأ هنا: إعادة الحد الأدنى إلى 1 دولار ***
-        if (usdValue >= 1) { 
-          portfolio.push({
-            asset: asset.ccy,
-            instId: instId,
-            amount: amount,
-            usdValue: usdValue,
-            frozen: parseFloat(asset.frozenBal)
-          });
-        }
+        // سنقوم بجلب كل العملات هنا، والفلترة ستتم عند العرض
+        portfolio.push({
+          asset: asset.ccy,
+          instId: instId,
+          amount: amount,
+          usdValue: usdValue,
+          price: price, // **تمت إضافة السعر هنا**
+          frozen: parseFloat(asset.frozenBal)
+        });
       }
     });
 
-    const totalUsd = portfolio.reduce((sum, a) => sum + a.usdValue, 0);
+    const totalUsd = portfolio
+        .filter(a => a.usdValue >= 1) // حساب الإجمالي فقط للعملات فوق 1 دولار
+        .reduce((sum, a) => sum + a.usdValue, 0);
+
     portfolio.forEach(a => {
       a.percentage = totalUsd > 0 ? ((a.usdValue / totalUsd) * 100) : 0;
     });
@@ -149,8 +151,13 @@ async function showBalance(ctx) {
   msg += `*💰 إجمالي القيمة:* *$${totalUsd.toFixed(2)}*\n`;
   msg += `------------------------------------\n`;
 
-  assets.forEach(a => {
+  // **تمت إضافة الفلترة هنا لضمان عدم عرض العملات الصغيرة**
+  assets.filter(a => a.usdValue >= 1).forEach(a => {
     msg += `*💎 ${a.asset}*\n`;
+    // **تمت إضافة السعر الحالي للعرض**
+    if (a.asset !== 'USDT') {
+        msg += `   *السعر الحالي:* $${a.price.toFixed(4)}\n`;
+    }
     msg += `   *القيمة:* $${a.usdValue.toFixed(2)}  *(${a.percentage.toFixed(2)}%)*\n`;
     msg += `   *الكمية:* ${a.amount.toLocaleString('en-US', { maximumFractionDigits: 6 })}\n\n`;
   });
@@ -176,13 +183,14 @@ function checkTotalValueChange(currentTotal, previousTotal) {
 
 function checkAssetCompositionChanges(currentAssets, previousAssets, prices) {
     const changes = [];
-    const prevAssetsMap = new Map(previousAssets.map(a => [a.asset, a]));
+    const prevAssetsMap = new Map(previousAssets.filter(a => a.usdValue >=1).map(a => [a.asset, a]));
+    const currentAssetsFiltered = currentAssets.filter(a => a.usdValue >=1);
 
-    for (const currentAsset of currentAssets) {
+    for (const currentAsset of currentAssetsFiltered) {
         const prevAsset = prevAssetsMap.get(currentAsset.asset);
-        if (!prevAsset && currentAsset.usdValue > 1) {
+        if (!prevAsset) {
             changes.push(`*🟢 شراء جديد:* ${currentAsset.amount.toFixed(4)} *${currentAsset.asset}*`);
-        } else if (prevAsset) {
+        } else {
             const amountChange = currentAsset.amount - prevAsset.amount;
             const price = prices[currentAsset.instId] || 0;
             if (Math.abs(amountChange) * price > 1) { 
@@ -202,7 +210,7 @@ function checkAssetCompositionChanges(currentAssets, previousAssets, prices) {
 
 function checkOwnedAssetPriceChanges(currentAssets, prices) {
     const changes = [];
-    for (const asset of currentAssets) {
+    for (const asset of currentAssets.filter(a => a.usdValue >= 1)) {
         const currentPrice = prices[asset.instId];
         const previousPrice = monitoredAssetPrices[asset.instId];
 
