@@ -1,4 +1,4 @@
-// index.js
+// index.js (النسخة الكاملة والمُصححة)
 
 const express = require("express");
 const { Bot, InlineKeyboard } = require("grammy");
@@ -6,13 +6,13 @@ const fetch = require("node-fetch");
 const crypto = require("crypto");
 require("dotenv").config();
 
-// --- إعداد السيرفر (لا تغيير) ---
+// --- إعداد السيرفر ---
 const app = express();
 const PORT = process.env.PORT || 3000;
 app.get("/", (req, res) => res.send("OKX Bot is running"));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
-// --- التحقق من متغيرات البيئة (لا تغيير) ---
+// --- التحقق من متغيرات البيئة ---
 const requiredEnv = [
   "TELEGRAM_BOT_TOKEN",
   "OKX_API_KEY",
@@ -26,7 +26,7 @@ for (const envVar of requiredEnv) {
   }
 }
 
-// --- إعدادات البوت والـ API (لا تغيير) ---
+// --- إعدادات البوت والـ API ---
 const bot = new Bot(process.env.TELEGRAM_BOT_TOKEN);
 const API_BASE_URL = "https://www.okx.com";
 const AUTHORIZED_USER_ID = parseInt(process.env.AUTHORIZED_USER_ID, 10);
@@ -35,11 +35,10 @@ const AUTHORIZED_USER_ID = parseInt(process.env.AUTHORIZED_USER_ID, 10);
 let isMonitoring = false;
 let monitoringInterval = null;
 let previousPortfolio = {};
-// [تعديل] إضافة متغيرات لتخزين عتبات التنبيه مع قيم افتراضية
-let assetChangeThreshold = 5; // النسبة المئوية لتنبيه تغيير الأصل الواحد
-let totalChangeThreshold = 10; // النسبة المئوية لتنبيه تغيير إجمالي المحفظة
+let assetChangeThreshold = 2; // قيمة افتراضية يمكنك تغييرها
+let totalChangeThreshold = 5; // قيمة افتراضية يمكنك تغييرها
 
-// --- وظائف الـ API المحسّنة (لا تغيير في منطقها) ---
+// --- وظائف الـ API ---
 function getHeaders(method, path, body = "") {
   const timestamp = new Date().toISOString();
   const signString = timestamp + method.toUpperCase() + path + (body ? JSON.stringify(body) : "");
@@ -81,18 +80,14 @@ async function getPortfolioData() {
     const headers = getHeaders("GET", balancePath);
     const res = await fetch(`${API_BASE_URL}${balancePath}`, { headers });
     const data = await res.json();
-
-    if (data.code !== "0") {
-        const errorMessage = data.msg || `OKX API Error Code: ${data.code}`;
-        return { assets: null, totalUsd: 0, error: errorMessage };
-    }
+    if (data.code !== "0") return { assets: null, totalUsd: 0, error: data.msg || `OKX API Error: ${data.code}` };
     
     const ownedCurrencies = data.data[0].details
       .filter(asset => parseFloat(asset.eq) > 0 && asset.ccy !== 'USDT')
       .map(asset => asset.ccy);
 
     const prices = await getMarketPrices(ownedCurrencies);
-    if (prices.error) return { assets: null, totalUsd: 0, error: `فشل جلب الأسعار: ${prices.error}` };
+    if (prices.error) return { assets: null, totalUsd: 0, error: `Failed to fetch prices: ${prices.error}` };
 
     const portfolio = [];
     data.data[0].details.forEach(asset => {
@@ -100,19 +95,13 @@ async function getPortfolioData() {
       if (amount > 0.000001) { 
         const price = prices[`${asset.ccy}-USDT`] || (asset.ccy === "USDT" ? 1 : 0);
         const usdValue = amount * price;
-        
-        if (usdValue >= 1) {
-          portfolio.push({ asset: asset.ccy, amount, usdValue, frozen: parseFloat(asset.frozenBal) });
-        }
+        if (usdValue >= 1) portfolio.push({ asset: asset.ccy, amount, usdValue, frozen: parseFloat(asset.frozenBal) });
       }
     });
 
     const totalUsd = portfolio.reduce((sum, a) => sum + a.usdValue, 0);
-    if (totalUsd > 0) {
-        portfolio.forEach(a => a.percentage = ((a.usdValue / totalUsd) * 100).toFixed(2));
-    }
+    if (totalUsd > 0) portfolio.forEach(a => a.percentage = ((a.usdValue / totalUsd) * 100).toFixed(2));
     portfolio.sort((a, b) => b.usdValue - a.usdValue);
-
     return { assets: portfolio, totalUsd, error: null };
   } catch (e) {
     console.error("Error fetching portfolio:", e);
@@ -120,7 +109,7 @@ async function getPortfolioData() {
   }
 }
 
-// --- وسيط التحقق من المستخدم (لا تغيير) ---
+// --- وسيط التحقق من المستخدم ---
 bot.use(async (ctx, next) => {
   if (ctx.from?.id !== AUTHORIZED_USER_ID) {
     return ctx.reply("🚫 غير مصرح لك باستخدام هذا البوت.");
@@ -130,50 +119,42 @@ bot.use(async (ctx, next) => {
 
 // --- وظائف البوت الأساسية ---
 async function showBalance(ctx) {
-  // ... (لا تغيير في هذه الوظيفة)
+  await ctx.reply("⏳ جارٍ جلب بيانات المحفظة...");
+  const { assets, totalUsd, error } = await getPortfolioData();
+  if (error) return ctx.reply(`❌ خطأ: ${error}`);
+  if (!assets || assets.length === 0) return ctx.reply("ℹ️ محفظتك فارغة.");
+  let msg = `📊 *ملخص المحفظة*\n💰 *الإجمالي:* $${totalUsd.toFixed(2)}\n\n`;
+  assets.forEach(a => msg += `• *${a.asset}*: $${a.usdValue.toFixed(2)} (${a.percentage}%)\n`);
+  const time = new Date().toLocaleTimeString("en-GB", { timeZone: "Africa/Cairo" });
+  msg += `\n_آخر تحديث: ${time}_`;
+  ctx.reply(msg, { parse_mode: "Markdown" });
 }
 
-// --- [تعديل] منطق المراقبة الآن يستخدم المتغيرات المخصصة ---
 async function checkPortfolioAndNotify(ctx) {
     const currentPortfolio = await getPortfolioData();
-    if (currentPortfolio.error) {
-        return ctx.reply(`⚠️ فشلت دورة المراقبة: ${currentPortfolio.error}`);
-    }
+    if (currentPortfolio.error) return ctx.reply(`⚠️ فشلت المراقبة: ${currentPortfolio.error}`);
     if (!currentPortfolio.assets || !previousPortfolio.assets) {
         previousPortfolio = currentPortfolio;
         return;
     }
-
     const changes = [];
-    const totalChangePercentage = previousPortfolio.totalUsd > 0
-        ? Math.abs(((currentPortfolio.totalUsd - previousPortfolio.totalUsd) / previousPortfolio.totalUsd) * 100)
-        : 0;
-
+    const totalChangePercentage = previousPortfolio.totalUsd > 0 ? Math.abs(((currentPortfolio.totalUsd - previousPortfolio.totalUsd) / previousPortfolio.totalUsd) * 100) : 0;
     currentPortfolio.assets.forEach(curr => {
         const prev = previousPortfolio.assets.find(a => a.asset === curr.asset);
-        if (!prev) {
-            changes.push(`🟢 *شراء جديد:* ${curr.asset} (يشكل الآن ${curr.percentage}%)`);
-        } else {
+        if (!prev) changes.push(`🟢 *شراء جديد:* ${curr.asset} (${curr.percentage}%)`);
+        else {
             const percentageChange = Math.abs(parseFloat(curr.percentage) - parseFloat(prev.percentage));
-            // استخدام المتغير المخصص بدلاً من القيمة الثابتة
-            if (percentageChange >= assetChangeThreshold) { 
-                const direction = curr.percentage > prev.percentage ? '📈' : '📉';
-                changes.push(`${direction} *${curr.asset}*: الآن ${curr.percentage}% (كان ${prev.percentage}%)`);
+            if (percentageChange >= assetChangeThreshold) {
+                const dir = curr.percentage > prev.percentage ? '📈' : '📉';
+                changes.push(`${dir} *${curr.asset}*: ${curr.percentage}% (كان ${prev.percentage}%)`);
             }
         }
     });
-
     previousPortfolio.assets.forEach(prev => {
-        if (!currentPortfolio.assets.find(a => a.asset === prev.asset)) {
-            changes.push(`🔴 *بيع كامل:* ${prev.asset} (كان يشكل ${prev.percentage}%)`);
-        }
+        if (!currentPortfolio.assets.find(a => a.asset === prev.asset)) changes.push(`🔴 *بيع كامل:* ${prev.asset}`);
     });
-    
-    // استخدام المتغير المخصص بدلاً من القيمة الثابتة
     if (changes.length > 0 || totalChangePercentage >= totalChangeThreshold) {
-        let msg = `🔔 *تنبيه بتغيرات المحفظة*\n💰 *الإجمالي الحالي:* $${currentPortfolio.totalUsd.toFixed(2)}\n`;
-        msg += `💰 *الإجمالي السابق:* $${previousPortfolio.totalUsd.toFixed(2)}\n\n`;
-        msg += changes.join("\n");
+        let msg = `🔔 *تنبيه بتغيرات المحفظة*\n💰 *الإجمالي:* $${currentPortfolio.totalUsd.toFixed(2)}\n\n` + changes.join("\n");
         ctx.reply(msg, { parse_mode: "Markdown" });
     }
     previousPortfolio = currentPortfolio;
@@ -182,57 +163,65 @@ async function checkPortfolioAndNotify(ctx) {
 async function startMonitoring(ctx) {
   if (isMonitoring) return ctx.reply("⚠️ المراقبة تعمل بالفعل.");
   isMonitoring = true;
-  // [تعديل] إعلام المستخدم بالعتبات الحالية عند بدء المراقبة
-  await ctx.reply(`✅ بدأت المراقبة.\n- تنبيه تغيير الأصل: *${assetChangeThreshold}%*\n- تنبيه تغيير الإجمالي: *${totalChangeThreshold}%*`, { parse_mode: "Markdown" });
-  
+  await ctx.reply(`✅ بدأت المراقبة.\n- تنبيه الأصل: *${assetChangeThreshold}%*\n- تنبيه الإجمالي: *${totalChangeThreshold}%*`, { parse_mode: "Markdown" });
   previousPortfolio = await getPortfolioData();
   if (previousPortfolio.error) {
       isMonitoring = false;
       return ctx.reply(`❌ فشل بدء المراقبة: ${previousPortfolio.error}`);
   }
-
   monitoringInterval = setInterval(() => checkPortfolioAndNotify(ctx), 15000);
 }
 
 async function stopMonitoring(ctx) {
-  // ... (لا تغيير في هذه الوظيفة)
+  if (!isMonitoring) return ctx.reply("ℹ️ المراقبة متوقفة بالفعل.");
+  clearInterval(monitoringInterval);
+  isMonitoring = false;
+  ctx.reply("🛑 توقفت المراقبة.");
 }
 
-// --- إعداد أوامر البوت والقائمة ---
+// --- إعداد الأوامر والقائمة ---
 const menu = new InlineKeyboard()
   .text("💰 عرض الرصيد", "show_balance").row()
   .text("👁️ بدء المراقبة", "start_monitoring").row()
   .text("🛑 إيقاف المراقبة", "stop_monitoring");
 
 bot.command("start", ctx =>
-  ctx.reply("أهلاً بك! اختر أمراً من القائمة أو استخدم `/set_thresholds` لتغيير عتبات التنبيه.", { reply_markup: menu })
+  ctx.reply("أهلاً بك! استخدم القائمة أو الأوامر مباشرة.\n`/balance`\n`/set_thresholds 2 5`", { reply_markup: menu })
 );
 
-// [تعديل] إضافة الأمر الجديد لتخصيص عتبات التنبيه
+// **[تصحيح]** إعادة أمر /balance المباشر
+bot.command("balance", showBalance);
+
 bot.command("set_thresholds", async (ctx) => {
-    // استخراج الأرقام من الرسالة
     const args = ctx.message.text.split(' ').slice(1);
-    const newAssetThreshold = parseFloat(args[0]);
-    const newTotalThreshold = parseFloat(args[1]);
-
-    // التحقق من صحة المدخلات
-    if (isNaN(newAssetThreshold) || isNaN(newTotalThreshold) || newAssetThreshold <= 0 || newTotalThreshold <= 0) {
-        return ctx.reply("❌ صيغة خاطئة. يرجى استخدام:\n`/set_thresholds <asset_%> <total_%>`\n\n*مثال:* `/set_thresholds 2 5`");
+    const newAssetThresh = parseFloat(args[0]);
+    const newTotalThresh = parseFloat(args[1]);
+    if (isNaN(newAssetThresh) || isNaN(newTotalThresh) || newAssetThresh <= 0 || newTotalThresh <= 0) {
+        return ctx.reply("❌ صيغة خاطئة. مثال:\n`/set_thresholds 2 5`");
     }
-
-    assetChangeThreshold = newAssetThreshold;
-    totalChangeThreshold = newTotalThreshold;
-
-    await ctx.reply(`✅ تم تحديث عتبات التنبيه بنجاح:\n- تنبيه تغيير الأصل: *${assetChangeThreshold}%*\n- تنبيه تغيير الإجمالي: *${totalChangeThreshold}%*`, { parse_mode: "Markdown" });
+    assetChangeThreshold = newAssetThresh;
+    totalChangeThreshold = newTotalThresh;
+    await ctx.reply(`✅ تم تحديث العتبات:\n- تنبيه الأصل: *${assetChangeThreshold}%*\n- تنبيه الإجمالي: *${totalChangeThreshold}%*`, { parse_mode: "Markdown" });
 });
 
-
+// **[تصحيح]** استعادة منطق معالجة ضغطات الأزرار
 bot.on("callback_query:data", async (ctx) => {
-  // ... (لا تغيير في هذه الوظيفة)
+  const data = ctx.callbackQuery.data;
+  await ctx.answerCallbackQuery(); // مهم لإزالة علامة التحميل من الزر
+  switch (data) {
+    case "show_balance":
+      await showBalance(ctx);
+      break;
+    case "start_monitoring":
+      await startMonitoring(ctx);
+      break;
+    case "stop_monitoring":
+      await stopMonitoring(ctx);
+      break;
+  }
 });
 
+// --- بدء تشغيل البوت ---
 bot.catch((err) => console.error("Error in bot:", err));
 bot.start();
-
-console.log("Bot started successfully with customizable thresholds!");
-
+console.log("Bot started successfully!");
