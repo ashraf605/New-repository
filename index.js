@@ -1,12 +1,13 @@
 // index.js
 
-// --- استدعاء المكتبات ---
+// --- المكتبات ---
 const { Bot, InlineKeyboard } = require("grammy");
 const fetch = require("node-fetch");
 const crypto = require("crypto");
-require('dotenv').config(); // لاستخدام ملف .env
+const express = require("express");
+require('dotenv').config();
 
-// --- التحقق من وجود المتغيرات الأساسية ---
+// --- تحقق من المتغيرات ---
 const requiredEnv = [
     "TELEGRAM_BOT_TOKEN",
     "OKX_API_KEY",
@@ -14,27 +15,23 @@ const requiredEnv = [
     "OKX_API_PASSPHRASE",
     "AUTHORIZED_USER_ID"
 ];
-
 for (const envVar of requiredEnv) {
     if (!process.env[envVar]) {
-        throw new Error(`خطأ: متغير البيئة ${envVar} غير موجود. يرجى إضافته إلى ملف .env`);
+        throw new Error(`خطأ: متغير البيئة ${envVar} غير موجود.`);
     }
 }
 
-// --- إعدادات البوت والمنصة ---
+// --- إعداد البوت ---
 const bot = new Bot(process.env.TELEGRAM_BOT_TOKEN);
 const API_BASE_URL = "https://www.okx.com";
 const AUTHORIZED_USER_ID = parseInt(process.env.AUTHORIZED_USER_ID, 10);
 
-// --- متغيرات لتخزين الحالة ---
+// --- المراقبة ---
 let isMonitoring = false;
 let monitoringInterval = null;
-let previousPortfolio = {};
-let priceAlerts = []; // لتخزين تنبيهات الأسعار
-let alertsInterval = null; // للمهمة الدورية الخاصة بالتنبيهات
+let previousPortfolio = { assets: [], totalUsd: 0 };
 
-// --- دوال مساعدة للاتصال بـ OKX ---
-
+// --- دوال مساعدة ---
 function getHeaders(method, path, body = "") {
     const timestamp = new Date().toISOString();
     const signString = timestamp + method.toUpperCase() + path + (body ? JSON.stringify(body) : "");
@@ -53,18 +50,15 @@ function getHeaders(method, path, body = "") {
 
 async function getMarketPrices() {
     try {
-        const tickersPath = "/api/v5/market/tickers?instType=SPOT";
-        const tickersResponse = await fetch(`${API_BASE_URL}${tickersPath}`);
-        const tickersData = await tickersResponse.json();
+        const res = await fetch(`${API_BASE_URL}/api/v5/market/tickers?instType=SPOT`);
+        const data = await res.json();
         const prices = {};
-        if (tickersData.code === "0" && tickersData.data) {
-            tickersData.data.forEach(ticker => {
-                prices[ticker.instId] = parseFloat(ticker.last);
-            });
+        if (data.code === "0" && data.data) {
+            data.data.forEach(t => prices[t.instId] = parseFloat(t.last));
         }
         return prices;
-    } catch (error) {
-        console.error("Error fetching market prices:", error);
+    } catch (e) {
+        console.error("Error fetching market prices:", e);
         return {};
     }
 }
@@ -72,331 +66,154 @@ async function getMarketPrices() {
 async function getPortfolioData() {
     try {
         const balancePath = "/api/v5/account/balance";
-        const balanceHeaders = getHeaders("GET", balancePath);
-        const balanceResponse = await fetch(`${API_BASE_URL}${balancePath}`, { headers: balanceHeaders });
-        const balanceData = await balanceResponse.json();
+        const res = await fetch(`${API_BASE_URL}${balancePath}`, { headers: getHeaders("GET", balancePath) });
+        const data = await res.json();
 
-        if (balanceData.code !== "0") {
-            console.error("OKX API Error (Balance):", balanceData.msg);
-            return { assets: null, totalUsd: 0 };
-        }
+        if (data.code !== "0") return { assets: null, totalUsd: 0 };
 
         const prices = await getMarketPrices();
-
         let portfolio = [];
-        const details = balanceData.data[0].details;
-        if (details && details.length > 0) {
+        const details = data.data[0].details;
+
+        if (details) {
             details.forEach(asset => {
                 const amount = parseFloat(asset.eq);
                 if (amount > 0) {
-                    const price = prices[`${asset.ccy}-USDT`] || (asset.ccy === 'USDT' ? 1 : 0);
+                    const price = prices[`${asset.ccy}-USDT`] || (asset.ccy === "USDT" ? 1 : 0);
                     const usdValue = amount * price;
-                    
                     if (usdValue >= 1.0) {
                         portfolio.push({
                             asset: asset.ccy,
-                            amount: amount,
-                            usdValue: usdValue,
-                            frozen: parseFloat(asset.frozenBal)
+                            usdValue: usdValue
                         });
                     }
                 }
             });
         }
 
-        const totalPortfolioUsd = portfolio.reduce((sum, asset) => sum + asset.usdValue, 0);
-
-        if (totalPortfolioUsd > 0) {
-            portfolio.forEach(asset => {
-                asset.percentage = (asset.usdValue / totalPortfolioUsd) * 100;
-            });
-        }
-
+        const totalPortfolioUsd = portfolio.reduce((sum, a) => sum + a.usdValue, 0);
+        portfolio.forEach(a => a.percentage = (a.usdValue / totalPortfolioUsd) * 100);
         portfolio.sort((a, b) => b.usdValue - a.usdValue);
 
         return { assets: portfolio, totalUsd: totalPortfolioUsd };
-
-    } catch (error) {
-        console.error("Error fetching portfolio data:", error);
+    } catch (e) {
+        console.error("Error fetching portfolio:", e);
         return { assets: null, totalUsd: 0 };
     }
 }
 
-// --- نظام الأمان (Middleware) ---
+// --- نظام الأمان ---
 bot.use(async (ctx, next) => {
-    const userId = ctx.from?.id;
-    if (!userId || userId !== AUTHORIZED_USER_ID) {
-        if (ctx.message) {
-           await ctx.reply("🚫 أنت غير مصرح لك باستخدام هذا البوت.");
-        } else if (ctx.callbackQuery) {
-           await ctx.answerCallbackQuery({ text: "🚫 أنت غير مصرح لك." });
-        }
+    if (ctx.from?.id !== AUTHORIZED_USER_ID) {
+        if (ctx.message) await ctx.reply("🚫 غير مصرح لك.");
+        else if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: "🚫 غير مصرح." });
         return;
     }
     await next();
 });
 
-
-// --- تعريف الأوامر والوظائف ---
-
+// --- عرض الرصيد ---
 async function showBalance(ctx) {
-    const chatId = ctx.chat.id;
-    await bot.api.sendMessage(chatId, "🔄 جارٍ جلب بيانات المحفظة...");
     const { assets, totalUsd } = await getPortfolioData();
+    if (!assets) return ctx.reply("🔴 خطأ في جلب الرصيد.");
 
-    if (!assets) {
-        return bot.api.sendMessage(chatId, "🔴 حدث خطأ أثناء جلب الرصيد. تأكد من صلاحية مفاتيح API.");
-    }
+    let message = `📊 *ملخص المحفظة*\n💰 *إجمالي القيمة: $${totalUsd.toFixed(2)}*\n\nالتوزيع الحالي:\n`;
+    assets.forEach(a => {
+        message += `- ${a.asset}: ${a.percentage.toFixed(2)}%\n`;
+    });
 
-    let message = `📊 *ملخص المحفظة*\n💰 *إجمالي القيمة: $${totalUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}*\n\n`;
-    
-    if (assets.length === 0) {
-        message = "ℹ️ لا توجد عملات في محفظتك قيمتها تزيد عن 1 دولار.";
-    } else {
-        assets.forEach(asset => {
-            message += `• *${asset.asset}*: \`${asset.amount.toFixed(6)}\`\n`;
-            message += `  💵 *$${asset.usdValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}* (${asset.percentage.toFixed(2)}%)\n`;
-            if (asset.frozen > 0) {
-                message += `  🔒 *محجوز*: \`${asset.frozen.toFixed(6)}\`\n`;
-            }
-            message += `\n`;
-        });
-    }
-    
-    const now = new Date();
-    const timeString = now.toLocaleTimeString('en-GB');
-    message += `_🕐 آخر تحديث: ${timeString}_`;
+    const now = new Date().toLocaleTimeString('en-GB');
+    message += `\n_🕐 آخر تحديث: ${now}_`;
 
-    await bot.api.sendMessage(chatId, message, { parse_mode: "Markdown" });
+    await ctx.reply(message, { parse_mode: "Markdown" });
 }
 
+// --- المراقبة ---
 async function startMonitoring(ctx) {
-    const chatId = ctx.chat.id;
-    if (isMonitoring) {
-        return bot.api.sendMessage(chatId, "⚠️ المراقبة تعمل بالفعل.");
-    }
+    if (isMonitoring) return ctx.reply("⚠️ المراقبة تعمل بالفعل.");
 
     isMonitoring = true;
-    await bot.api.sendMessage(chatId, "✅ تم بدء المراقبة. سأعلمك بأي تغييرات...");
+    await ctx.reply("✅ تم بدء المراقبة.");
 
-    previousPortfolio = await getBalanceForMonitoring() || {};
-    console.log("Initial portfolio set:", previousPortfolio);
+    previousPortfolio = await getPortfolioData();
+    if (!previousPortfolio.assets) return ctx.reply("🔴 خطأ في جلب المحفظة.");
 
     monitoringInterval = setInterval(async () => {
-        const currentPortfolio = await getBalanceForMonitoring();
-        if (!currentPortfolio) return;
+        const currentPortfolio = await getPortfolioData();
+        if (!currentPortfolio.assets) return;
 
-        const notifications = [];
-        const allAssets = new Set([...Object.keys(previousPortfolio), ...Object.keys(currentPortfolio)]);
+        let changes = [];
+        const prevMap = {};
+        previousPortfolio.assets.forEach(a => prevMap[a.asset] = a.percentage);
 
-        allAssets.forEach(asset => {
-            const prevAmount = previousPortfolio[asset] || 0;
-            const currAmount = currentPortfolio[asset] || 0;
-            if (Math.abs(currAmount - prevAmount) < 1e-9) return;
-
-            if (prevAmount === 0 && currAmount > 0) {
-                notifications.push(`🟢 *شراء جديد*: ${currAmount.toFixed(8)} *${asset}*`);
-            } else if (currAmount === 0 && prevAmount > 0) {
-                notifications.push(`🔴 *بيع كامل*: تم بيع كامل الكمية من *${asset}*`);
-            } else if (currAmount > prevAmount) {
-                notifications.push(`🟡 *زيادة شراء*: تم شراء ${(currAmount - prevAmount).toFixed(8)} *${asset}*`);
-            } else if (currAmount < prevAmount) {
-                notifications.push(`🟠 *بيع جزئي*: تم بيع ${(prevAmount - currAmount).toFixed(8)} *${asset}*`);
+        currentPortfolio.assets.forEach(a => {
+            const prevPercent = prevMap[a.asset] || 0;
+            const diff = a.percentage - prevPercent;
+            if (Math.abs(diff) >= 1) {
+                if (diff > 0) changes.push(`📈 اشترى ${a.asset} بنسبة +${diff.toFixed(2)}%`);
+                else changes.push(`📉 باع ${a.asset} بنسبة ${diff.toFixed(2)}%`);
             }
         });
 
-        if (notifications.length > 0) {
-            await bot.api.sendMessage(chatId, notifications.join("\n\n"), { parse_mode: "Markdown" });
+        // حساب التغير في الإجمالي
+        const totalDiff = currentPortfolio.totalUsd - previousPortfolio.totalUsd;
+        const totalDiffPercent = (totalDiff / previousPortfolio.totalUsd) * 100;
+        let totalChangeMsg = "";
+        if (Math.abs(totalDiffPercent) >= 0.1) {
+            if (totalDiff > 0) totalChangeMsg = `\n\n💰 *التغير في الإجمالي: +$${totalDiff.toFixed(2)} (+${totalDiffPercent.toFixed(2)}%)*`;
+            else totalChangeMsg = `\n\n💰 *التغير في الإجمالي: -$${Math.abs(totalDiff).toFixed(2)} (${totalDiffPercent.toFixed(2)}%)*`;
         }
+
+        if (changes.length > 0 || totalChangeMsg) {
+            let message = `📊 *تحديث جديد للمحفظة*\n\n${changes.join("\n")}${totalChangeMsg}\n\nالاجمالي:\n`;
+            currentPortfolio.assets.forEach(a => {
+                message += `- ${a.asset}: ${a.percentage.toFixed(2)}%\n`;
+            });
+            await bot.api.sendMessage(AUTHORIZED_USER_ID, message, { parse_mode: "Markdown" });
+        }
+
         previousPortfolio = currentPortfolio;
-    }, 15000);
+    }, 20000);
 }
 
 async function stopMonitoring(ctx) {
-    const chatId = ctx.chat.id;
-    if (!isMonitoring) {
-        return bot.api.sendMessage(chatId, "ℹ️ المراقبة لا تعمل بالفعل.");
-    }
+    if (!isMonitoring) return ctx.reply("ℹ️ المراقبة لا تعمل.");
     isMonitoring = false;
     clearInterval(monitoringInterval);
-    monitoringInterval = null;
-    previousPortfolio = {};
-    await bot.api.sendMessage(chatId, "🛑 تم إيقاف المراقبة بنجاح.");
+    await ctx.reply("🛑 تم إيقاف المراقبة.");
 }
 
-async function getBalanceForMonitoring() {
-    const { assets } = await getPortfolioData();
-    if (!assets) return null;
-    const portfolioMap = {};
-    assets.forEach(asset => {
-        portfolioMap[asset.asset] = asset.amount;
-    });
-    return portfolioMap;
-}
-
-// --- وظائف ميزة تنبيهات الأسعار ---
-
-async function checkPriceAlerts() {
-    if (priceAlerts.length === 0) return;
-
-    const prices = await getMarketPrices();
-    
-    const triggeredAlerts = [];
-
-    for (const alert of priceAlerts) {
-        const currentPrice = prices[alert.pair];
-        if (currentPrice === undefined) continue;
-
-        let conditionMet = false;
-        if (alert.condition === 'فوق' && currentPrice > alert.price) {
-            conditionMet = true;
-        } else if (alert.condition === 'تحت' && currentPrice < alert.price) {
-            conditionMet = true;
-        }
-
-        if (conditionMet) {
-            const message = `🔔 *تنبيه سعر!* 🔔\n\nوصل سعر *${alert.pair}* إلى *${currentPrice}*، وهو ${alert.condition} السعر الذي حددته (${alert.price}).`;
-            await bot.api.sendMessage(alert.chatId, message, { parse_mode: "Markdown" });
-            triggeredAlerts.push(alert);
-        }
-    }
-    // حذف التنبيهات بعد إرسالها
-    priceAlerts = priceAlerts.filter(a => !triggeredAlerts.includes(a));
-}
-
-// --- معالجات الأوامر والأزرار ---
-
-const mainMenuKeyboard = new InlineKeyboard()
+// --- الأوامر ---
+const mainMenu = new InlineKeyboard()
     .text("💰 عرض الرصيد", "show_balance").row()
     .text("👁️ بدء المراقبة", "start_monitoring").row()
-    .text("🛑 إيقاف المراقبة", "stop_monitoring").row()
-    .text("🔔 إدارة التنبيهات", "manage_alerts");
+    .text("🛑 إيقاف المراقبة", "stop_monitoring");
 
-bot.command("start", (ctx) => {
-    const message = 
-        `📊 *أهلاً بك في بوت مراقبة OKX!*\n\n` +
-        `أنا هنا لمساعدتك في متابعة حسابك بكل سهولة. اختر أحد الخيارات من الأزرار أدناه:`;
-
-    ctx.reply(message, { 
-        reply_markup: mainMenuKeyboard,
-        parse_mode: "Markdown" 
-    });
-});
-
+bot.command("start", (ctx) =>
+    ctx.reply("📊 *بوت مراقبة OKX*\nاختر:", { reply_markup: mainMenu, parse_mode: "Markdown" })
+);
 bot.command("balance", showBalance);
 bot.command("monitor", startMonitoring);
 bot.command("stop_monitor", stopMonitoring);
 
-bot.command("alert", (ctx) => {
-    const args = ctx.message.text.split(' ').slice(1);
-    if (args.length !== 3) {
-        return ctx.reply("استخدام خاطئ. الصيغة الصحيحة:\n`/alert <العملة> <فوق/تحت> <السعر>`\n\n*مثال:*\n`/alert BTC-USDT فوق 120000`", { parse_mode: "Markdown" });
-    }
-    const [pair, condition, priceStr] = args;
-    const price = parseFloat(priceStr);
-
-    if (condition !== 'فوق' && condition !== 'تحت') {
-        return ctx.reply("خطأ: يجب أن تكون الحالة 'فوق' أو 'تحت'.");
-    }
-    if (isNaN(price)) {
-        return ctx.reply("خطأ: السعر يجب أن يكون رقماً.");
-    }
-
-    priceAlerts.push({ chatId: ctx.chat.id, pair: pair.toUpperCase(), condition, price });
-    ctx.reply(`✅ تم ضبط التنبيه: سأعلمك عندما يصبح سعر *${pair.toUpperCase()}* ${condition} *${price}*`, { parse_mode: "Markdown" });
-});
-
-bot.command("view_alerts", (ctx) => {
-    if (priceAlerts.length === 0) {
-        return ctx.reply("ℹ️ لا توجد تنبيهات أسعار نشطة حالياً.");
-    }
-    let message = "🔔 *قائمة التنبيهات النشطة:*\n\n";
-    priceAlerts.forEach(alert => {
-        message += `• *${alert.pair}* ${alert.condition} *${alert.price}*\n`;
-    });
-    ctx.reply(message, { parse_mode: "Markdown" });
-});
-
-bot.command("delete_alert", (ctx) => {
-    const pairToDelete = ctx.message.text.split(' ')[1];
-    if (!pairToDelete) {
-        return ctx.reply("استخدام خاطئ. الصيغة الصحيحة:\n`/delete_alert <العملة>`\n\n*مثال:*\n`/delete_alert BTC-USDT`", { parse_mode: "Markdown" });
-    }
-    const initialLength = priceAlerts.length;
-    priceAlerts = priceAlerts.filter(alert => alert.pair.toUpperCase() !== pairToDelete.toUpperCase());
-    
-    if (priceAlerts.length < initialLength) {
-        ctx.reply(`✅ تم حذف جميع التنبيهات الخاصة بـ *${pairToDelete.toUpperCase()}*`, { parse_mode: "Markdown" });
-    } else {
-        ctx.reply(`ℹ️ لم يتم العثور على تنبيهات للعملة *${pairToDelete.toUpperCase()}*`, { parse_mode: "Markdown" });
-    }
-});
-
-
-// معالج الضغط على الأزرار
 bot.on("callback_query:data", async (ctx) => {
-    const callbackData = ctx.callbackQuery.data;
-    console.log(`Button pressed: ${callbackData}`);
-    
     await ctx.answerCallbackQuery();
-
-    switch (callbackData) {
-        case "show_balance":
-            await showBalance(ctx);
-            break;
-        case "start_monitoring":
-            await startMonitoring(ctx);
-            break;
-        case "stop_monitoring":
-            await stopMonitoring(ctx);
-            break;
-        case "manage_alerts":
-            // --- هذا هو الجزء الذي تم تصحيحه ---
-            const alertMessage = 
-                "🔔 *إدارة تنبيهات الأسعار*\n\n" +
-                "استخدم الأوامر التالية لضبط التنبيهات:\n\n" +
-                "1️⃣ *لضبط تنبيه جديد:*\n" +
-                "`/alert <العملة> <فوق/تحت> <السعر>`\n" +
-                "مثال: `/alert BTC-USDT فوق 120000`\n\n" +
-                "2️⃣ *لعرض التنبيهات النشطة:*\n" +
-                "`/view_alerts`\n\n" +
-                "3️⃣ *لحذف تنبيه:*\n" +
-                "`/delete_alert <العملة>`\n" +
-                "مثال: `/delete_alert BTC-USDT`";
-            // تم استخدام parse_mode: undefined لإرسال النص كما هو بدون تنسيق خاص لتجنب الأخطاء
-            await ctx.reply(alertMessage, { parse_mode: "Markdown" });
-            break;
-    }
+    if (ctx.callbackQuery.data === "show_balance") await showBalance(ctx);
+    if (ctx.callbackQuery.data === "start_monitoring") await startMonitoring(ctx);
+    if (ctx.callbackQuery.data === "stop_monitoring") await stopMonitoring(ctx);
 });
 
+// --- Keep-Alive لـ Railway ---
+const app = express();
+app.get("/", (req, res) => res.send("Bot is running!"));
+app.listen(process.env.PORT || 3000, () => console.log("Keep-Alive active"));
 
-// --- بدء تشغيل البوت ---
-bot.catch((err) => {
-    console.error("Bot Error:", err);
-});
+setInterval(() => {
+    fetch("https://YOUR_APP_URL.railway.app")
+        .then(() => console.log("Keep-Alive ping"))
+        .catch(() => console.log("Ping failed"));
+}, 5 * 60 * 1000);
 
-async function startBot() {
-    try {
-        await bot.api.setMyCommands([
-            { command: 'start', description: 'بدء تشغيل البوت وعرض القائمة' },
-            { command: 'balance', description: 'عرض رصيد المحفظة الحالي' },
-            { command: 'alert', description: 'ضبط تنبيه سعر جديد' },
-            { command: 'view_alerts', description: 'عرض التنبيهات النشطة' },
-            { command: 'delete_alert', description: 'حذف تنبيه سعر' },
-            { command: 'monitor', description: 'بدء المراقبة التلقائية' },
-            { command: 'stop_monitor', description: 'إيقاف المراقبة' },
-        ]);
-        console.log("✅ تم تسجيل الأوامر في قائمة تليجرام بنجاح.");
-    } catch (error) {
-        console.warn("⚠️ تحذير: فشل في تسجيل الأوامر. قد يكون هناك مشكلة في الاتصال بالإنترنت.");
-        console.warn("سيستمر البوت في العمل بشكل طبيعي، ولكن قد لا تظهر قائمة الأوامر.");
-    }
-    
-    // بدء المهمة الدورية لفحص تنبيهات الأسعار
-    alertsInterval = setInterval(checkPriceAlerts, 20000); // كل 20 ثانية
-
-    console.log("🚀 البوت قيد التشغيل...");
-    await bot.start();
-}
-
-startBot();
+// --- تشغيل البوت ---
+bot.catch(err => console.error("Bot error:", err));
+bot.start();
