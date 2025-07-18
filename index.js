@@ -12,12 +12,11 @@ const requiredEnv = [
   "OKX_API_KEY",
   "OKX_API_SECRET_KEY",
   "OKX_API_PASSPHRASE",
-  "AUTHORIZED_USER_ID",
-  "RAILWAY_STATIC_URL" // متغير جديد ومهم جداً
+  "AUTHORIZED_USER_ID"
+  // تم إزالة RAILWAY_STATIC_URL من التحقق المبدئي لتجنب الانهيار
 ];
 for (const envVar of requiredEnv) {
   if (!process.env[envVar]) {
-    // لا تقم بإيقاف التطبيق بالكامل، فقط سجل الخطأ
     console.error(`!!! متغير البيئة ${envVar} غير موجود. قد لا يعمل البوت بشكل صحيح.`);
   }
 }
@@ -29,7 +28,7 @@ const PORT = process.env.PORT || 3000;
 
 // --- إعدادات Express ---
 const app = express();
-app.use(express.json()); // مهم جداً للـ webhooks
+app.use(express.json());
 
 // --- إعداد Webhook ---
 // هذا هو المسار الذي سيستقبل التحديثات من تلغرام
@@ -48,9 +47,6 @@ let watchlist = new Set();
 let watchlistPrices = {};
 
 // ... (جميع دوال البوت الأخرى تبقى كما هي بدون تغيير) ...
-// getHeaders, getMarketPrices, getPortfolioData, showBalance, 
-// checkTotalValueChange, checkAssetCompositionChanges, etc.
-
 function getHeaders(method, path, body = "") {
   const timestamp = new Date().toISOString();
   const bodyString = typeof body === 'object' ? JSON.stringify(body) : body;
@@ -139,7 +135,9 @@ async function getPortfolioData() {
 
 bot.use(async (ctx, next) => {
   if (ctx.from?.id !== AUTHORIZED_USER_ID) {
-    return ctx.reply("🚫 غير مصرح لك باستخدام هذا البوت.");
+    // لا ترسل رد هنا لتجنب الكشف عن وجود البوت لغير المصرح لهم
+    console.log(`Unauthorized access attempt by user ID: ${ctx.from?.id}`);
+    return;
   }
   await next();
 });
@@ -283,8 +281,11 @@ async function startMonitoring(ctx) {
 
     if (allNotifications.length > 0) {
         const finalMessage = allNotifications.join("\n\n");
-        // نستخدم bot.api.sendMessage لإرسال الرسائل خارج سياق الطلب
-        await bot.api.sendMessage(AUTHORIZED_USER_ID, finalMessage, { parse_mode: "Markdown" });
+        try {
+            await bot.api.sendMessage(AUTHORIZED_USER_ID, finalMessage, { parse_mode: "Markdown" });
+        } catch (e) {
+            console.error("Failed to send monitoring update:", e);
+        }
     }
 
     previousPortfolioState = currentPortfolio;
@@ -378,20 +379,31 @@ bot.on("callback_query:data", async ctx => {
 });
 
 bot.catch((err) => {
+    console.error("--- UNCAUGHT ERROR ---");
     const ctx = err.ctx;
     console.error(`Error while handling update ${ctx.update.update_id}:`);
-    const e = err.error;
-    if (e instanceof Error) {
-        console.error(e);
-    }
+    console.error(err.error);
+    console.error("--- END UNCAUGHT ERROR ---");
 });
 
-// --- تشغيل الخادم والـ Webhook ---
-// لا تستخدم bot.start() بعد الآن
+// --- تشغيل الخادم والـ Webhook (النسخة الآمنة) ---
 app.listen(PORT, async () => {
   console.log(`Server listening on port ${PORT}`);
-  // نقوم بتسجيل الـ webhook مع تلغرام عند بدء التشغيل
-  const webhookUrl = `https://${process.env.RAILWAY_STATIC_URL}/${bot.token}`;
-  await bot.api.setWebhook(webhookUrl);
-  console.log(`Webhook set to: ${webhookUrl}`);
+  
+  const domain = process.env.RAILWAY_STATIC_URL;
+  if (domain) {
+    // فقط قم بتسجيل الـ webhook إذا كان المتغير موجوداً
+    const webhookUrl = `https://${domain}/${bot.token}`;
+    try {
+      await bot.api.setWebhook(webhookUrl, {
+        drop_pending_updates: true // لحذف أي تحديثات قديمة عالقة
+      });
+      console.log(`Webhook successfully set to: ${webhookUrl}`);
+    } catch (e) {
+      console.error("!!! Failed to set webhook:", e);
+    }
+  } else {
+    console.error("!!! RAILWAY_STATIC_URL is not set. Webhook will not be configured.");
+    console.error("!!! البوت لن يعمل بدون webhook. يرجى التأكد من تعريف المتغير وإعادة النشر.");
+  }
 });
